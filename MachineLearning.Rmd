@@ -1,0 +1,158 @@
+---
+title: "Practical Machinelearning"
+author: "Carl-Johan Rosenberg"
+date: "21/03/2015"
+output:
+  html_document: default
+  pdf_document:
+    fig_caption: yes
+---
+```{r, echo=FALSE,eval=TRUE}
+#Template the chunks can also be useful to set size of figure
+knitr::opts_template$set(default=list(echo=TRUE,tidy=TRUE,eval=TRUE))
+options(scipen=1) #Turns off the default scientific display of data
+```
+
+## Executive Summary
+
+With the rise of new small and cheap accelerometers the fitness tracking field with brands such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. In the current study data from http://groupware.les.inf.puc-rio.br/har
+will be analyzed to determine whether the participant performs the motion in a correct way. Based on the training data i.e., readings from the accelerometers
+20 observations should be classified as to whether they were performing the motion correctly. Using a gradient boosting model as available in the R gbm package a model with 99.2% accuracy is devised as measured by cross validation.
+In line with the model the 20 observations are predicted with 100%. For reproducability purposes the complete code will be shown below.
+
+## Data processing
+
+The first step in the analysis is to download the data and load it into R. 
+
+```{r,eval=FALSE}
+#Link from where to receive the data
+url_training<-"https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+url_testing<-"https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+message("Downloads the files")
+#Downloads the data into a file ./data/data.zip, wget to allows for the https
+download.file(url_training,destfile='./data/training.csv',method = "wget",mode = 'wb')
+download.file(url_testing,destfile='./data/testing.csv',method = "wget",mode = 'wb')
+
+message("Unzips and loads the data")
+#Reads the unzipped the data into a data
+training <- read.csv('./data/training.csv',sep = ',',stringsAsFactors = FALSE, header = TRUE)
+testing<- read.csv('./data/testing.csv',sep = ',',stringsAsFactors = FALSE, header = TRUE)
+```
+
+After downloading the data the next step is to view it and it consists of 19622 observations and 160 columns. In the research papers  http://groupware.les.inf.puc-rio.br/har the approach taken is to in addition to the raw data use a time series based approach based on rolling windows. As the primary objective is to predict the 20 test samples, and it is unknown as to which window they would belong only the raw data features will be used.
+
+```{r, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
+require('caret')                      #PRIMARY PACKAGE FOR R MACHINE LEARNING
+require('parallel')                   #LIBRARY USED FOR PARALLEL PROCESSING
+require('doParallel')                 #LIBRARY USED FOR PARALLEL PROCESSING
+require('ggplot2',quietly=TRUE)       #USED FOR GRAPHICS
+require('xtable',quietly=TRUE)        #USED FOR RENDERING TABLES
+options(xtable.comment = FALSE)       #SUPPRESSES COMMENTS FROM XTABLE
+```
+
+
+```{r,opts.label='default'}
+#Excluding na values
+training<-training[,!apply(is.na(training), 2,any)]
+testing<-testing[,!apply(is.na(testing), 2,any)]
+#Excluding empty values
+training<-training[,!apply(training, 2, function(x) any(x==""))]
+testing<-testing[,!apply(testing, 2, function(x) any(x==""))]
+
+training<-training[,-c(1:7)]
+testing<-testing[,-c(1:7)]
+```
+
+
+```{r,results="asis",eval=TRUE,echo=FALSE,message=FALSE,warning=FALSE}
+
+variable_elimination<-data.frame(variables=c("X", "user_name", "raw_timestamp_part_1","raw_timestamp_part_2","cvtd_timestamp","new_window"))
+
+print(xtable(variable_elimination))
+```
+
+
+##Model selection
+
+There are several methods of fitting the data. Such as simple methods such as
+lm, glm, lda to ensemble methods like random forest, bagging and boosting.
+The advantage of using methods like lm, glm, lda is that they are simple to use and 
+are easy to interpret. With the ensemble methods the random forest, bagging and boosting,
+the interpretatibility is lost while in general the predictive ability increases.
+
+Both the random forest and boosting methodologies have been tested and it is important
+to tune the parameters to get the right compromise between performance and accuracy.
+
+In terms of learning for the current case as the data set is relatively large it is important when specifying model and determining the parameters to have a quick iteration time, which can be achieved by exploring the data using sampling to select a small subset like a few percent of the data to explore parameters to determine the tuning.
+
+Using the caret training method it has also been shown that using the parallel computing to increase the processing speed which can be significant. In addition to the parallel computing also using the gc() garbage collecting function has proved to be useful.
+
+
+```{r, results='hide', message=FALSE, warning=FALSE}
+
+registerDoParallel(clust <- makeForkCluster(detectCores()))
+#Takes about half an hour to run the simulation
+InTrain<-createDataPartition(y=training$classe,p=0.05,list=FALSE)
+training1<-training[InTrain,]
+
+gbmGrid <-  expand.grid(interaction.depth = c(1,3,5,9),
+                        n.trees = c(50,100,200,300,500,1000),
+                        shrinkage = 0.1)
+
+fitControl <- trainControl(method = "repeatedcv",
+                           number = 3,
+                           repeats = 3,
+                           ## Estimate class probabilities
+                           classProbs = TRUE)
+                     
+gbmFit <- train(as.factor(classe)~.,data=training1,
+                 method = "gbm",
+                 trControl = fitControl,
+                 verbose = FALSE,
+                 tuneGrid = gbmGrid,
+                 ## Specify which metric to optimize
+                 metric = "ROC")
+stopCluster(clust)
+```
+
+```{r,opts.label='default'}
+trellis.par.set(caretTheme())
+plot(gbmFit)
+```
+
+##Final Model
+
+Below the final model is fitted, which takes about 20 minutes to complete and gives a cross validated error of 99.1 using 3 folds. It would be possible to reduce the number of features considerably while still keeping a high degree of accuracy but as we use a tree algorithm that also takes care of feature selection.
+
+```{r,eval=FALSE, results='hide', message=FALSE, warning=FALSE, tidy=TRUE}
+
+registerDoParallel(clust <- makeForkCluster(detectCores()))
+#Takes about half an hour to run the simulation
+InTrain<-createDataPartition(y=training$classe,p=1,list=FALSE)
+training1<-training[InTrain,]
+
+gbmGrid <-  expand.grid(interaction.depth = c(5),
+                        n.trees = c(300),
+                        shrinkage = 0.1)
+
+fitControl <- trainControl(method = "repeatedcv",
+                           number = 3,
+                           repeats = 3,
+                           ## Estimate class probabilities
+                           classProbs = TRUE)
+                     
+gbmFit <- train(as.factor(classe)~.,data=training1,
+                 method = "gbm",
+                 trControl = fitControl,
+                 verbose = FALSE,
+                 tuneGrid = gbmGrid,
+                 ## Specify which metric to optimize
+                 metric = "ROC")
+
+trellis.par.set(caretTheme())
+plot(gbmFit)
+stopCluster(clust)
+print(gbmFit)
+
+```
